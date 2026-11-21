@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="AccountScan - by Dhananjay Uphade" width="100%"/>
+<img src="banner.svg" alt="AccountScan - by Dhananjay Uphade" width="100%"/>
 
 <br/>
 
