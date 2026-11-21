@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accountscan"
+version = "1.0.0"
+description = "Find which websites and services your own email address is registered on (IMAP, read-only)."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+authors = [{ name = "Dhananjay Uphade", email = "dhannjayuphade5@gmail.com" }]
+keywords = ["email", "imap", "privacy", "osint", "accounts", "termux"]
+
+[project.urls]
+Homepage = "https://dhannjayuphade.github.io/"
+Source = "https://github.com/dhannjayuphade/accountscan"
+
+[project.scripts]
+accountscan = "accountscan:main"
+
+[tool.setuptools]
+py-modules = ["accountscan"]
