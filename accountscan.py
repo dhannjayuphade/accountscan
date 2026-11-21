@@ -16,6 +16,7 @@ Use it ONLY on a mailbox that belongs to you.
 import argparse
 import csv
 import getpass
+import html as _html
 import imaplib
 import os
 import random
@@ -26,7 +27,7 @@ import textwrap
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -75,6 +76,45 @@ TYPE_COLOR = {"signup": 46, "password": 220, "security": 203, "receipt": 51}
 FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
              "yahoo.com", "yahoo.in", "icloud.com", "live.com", "proton.me"}
 SLD = {"co", "com", "org", "net", "gov", "ac", "edu", "nic"}
+
+# Platform name + the page where YOU manage your own account (settings / login).
+SERVICE_INFO = {
+    "google.com": ("Google", "https://myaccount.google.com/"),
+    "youtube.com": ("YouTube", "https://www.youtube.com/account"),
+    "instagram.com": ("Instagram", "https://www.instagram.com/accounts/edit/"),
+    "facebook.com": ("Facebook", "https://www.facebook.com/settings"),
+    "facebookmail.com": ("Facebook", "https://www.facebook.com/settings"),
+    "snapchat.com": ("Snapchat", "https://accounts.snapchat.com/"),
+    "snap.com": ("Snapchat", "https://accounts.snapchat.com/"),
+    "x.com": ("X (Twitter)", "https://x.com/settings/account"),
+    "twitter.com": ("X (Twitter)", "https://x.com/settings/account"),
+    "linkedin.com": ("LinkedIn", "https://www.linkedin.com/psettings/"),
+    "github.com": ("GitHub", "https://github.com/settings/profile"),
+    "telegram.org": ("Telegram", "https://my.telegram.org/"),
+    "discord.com": ("Discord", "https://discord.com/channels/@me"),
+    "reddit.com": ("Reddit", "https://www.reddit.com/settings/account"),
+    "redditmail.com": ("Reddit", "https://www.reddit.com/settings/account"),
+    "pinterest.com": ("Pinterest", "https://www.pinterest.com/settings/"),
+    "spotify.com": ("Spotify", "https://www.spotify.com/account/"),
+    "netflix.com": ("Netflix", "https://www.netflix.com/YourAccount"),
+    "amazon.in": ("Amazon India", "https://www.amazon.in/gp/css/homepage.html"),
+    "amazon.com": ("Amazon", "https://www.amazon.com/gp/css/homepage.html"),
+    "flipkart.com": ("Flipkart", "https://www.flipkart.com/account/"),
+    "microsoft.com": ("Microsoft", "https://account.microsoft.com/"),
+    "apple.com": ("Apple", "https://appleid.apple.com/"),
+    "canva.com": ("Canva", "https://www.canva.com/settings"),
+    "zomato.com": ("Zomato", "https://www.zomato.com/"),
+    "swiggy.in": ("Swiggy", "https://www.swiggy.com/"),
+    "paytm.com": ("Paytm", "https://paytm.com/"),
+    "irctc.co.in": ("IRCTC", "https://www.irctc.co.in/nget/train-search"),
+}
+
+
+def service_info(dom):
+    """Return (platform name, link). Unknown domains fall back to the site itself."""
+    if dom in SERVICE_INFO:
+        return SERVICE_INFO[dom]
+    return dom.split(".")[0].capitalize(), f"https://{dom}/"
 
 DEMO_ROWS = [
     ("flipkart.com", "2018-07-21", "2025-02-11", 48, "receipt,signup"),
@@ -403,6 +443,8 @@ def summarize(msgs):
             "count": s["count"],
             "types": ",".join(sorted(s["types"])),
             "subject": s["subject"],
+            "name": service_info(dom)[0],
+            "link": service_info(dom)[1],
         })
     rows.sort(key=lambda r: (r["first"] == "?", r["first"]))
     return rows
@@ -459,14 +501,25 @@ def print_results(rows):
                   f"{C(YELLOW, row[4])} mail(s)")
             print(f"      {color_types(row[5])}")
 
+    print()
+    print("  " + C(MAG, ">> YOUR ACCOUNTS (open to manage / secure / delete)", True))
+    for i, r in enumerate(rows, 1):
+        name = r.get("name") or service_info(r["service"])[0]
+        link = r.get("link") or service_info(r["service"])[1]
+        print(f"  {C(GREY, str(i).rjust(3))} {C(GREEN, name.ljust(14), True)} {C(CYAN, link)}")
+    print()
+    print("  " + C(GREY, "Links open the service's own account page. Email headers do not "
+                         "contain your username, so exact profile URLs cannot be known."))
+
 
 def save_csv(path, rows):
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["service", "first_seen", "last_seen", "mails", "types",
-                    "first_subject"])
+        w.writerow(["platform", "service", "link", "first_seen", "last_seen",
+                    "mails", "types", "first_subject"])
         for r in rows:
-            w.writerow([r["service"], r["first"] if r["first"] != "?" else "",
+            w.writerow([r.get("name", ""), r["service"], r.get("link", ""),
+                        r["first"] if r["first"] != "?" else "",
                         r["last"] if r["last"] != "?" else "", r["count"],
                         "|".join(r["types"].split(",")), r["subject"]])
     status("+", GREEN, f"Saved CSV: {C(CYAN, path)}")
@@ -490,6 +543,10 @@ def build_parser():
     ap.add_argument("--csv", help="also save the result to this CSV file")
     ap.add_argument("--list-folders", action="store_true",
                     help="show the folder names of your mailbox and exit")
+    ap.add_argument("--watch", action="store_true",
+                    help="Security Watch: find unknown logins / hacked-account alerts")
+    ap.add_argument("--days", type=int, default=30,
+                    help="Security Watch: how many days back to check (default 30)")
     ap.add_argument("--yes", action="store_true",
                     help="confirm that you own this mailbox (skips the question)")
     ap.add_argument("--demo", action="store_true",
@@ -527,6 +584,208 @@ def list_folders(conn):
         print("    " + C(CYAN, name))
 
 
+def clear_screen():
+    sys.stdout.write("\033[2J\033[3J\033[H")
+    sys.stdout.flush()
+
+
+# --------------------------------------------------------------------------
+# Security Watch: detect unauthorized logins on YOUR accounts
+# --------------------------------------------------------------------------
+WATCH_WORDS = {
+    "HIGH": ["password changed", "password was changed", "password has been changed",
+             "recovery email", "recovery phone", "recovery information",
+             "2-step verification turned off", "turned off 2-step",
+             "suspicious", "unusual", "blocked", "was not you", "someone else"],
+    "MEDIUM": ["new login", "new sign-in", "new sign in", "new device",
+               "security alert", "sign-in attempt", "login attempt",
+               "signed in to", "logged in from"],
+}
+
+CHECK_LINKS = [
+    ("Google: devices signed in (log out here)", "https://myaccount.google.com/device-activity"),
+    ("Google: security checkup", "https://myaccount.google.com/security-checkup"),
+    ("Google: FIND / LOCK / ERASE a lost phone", "https://myaccount.google.com/find-your-phone"),
+    ("Microsoft: recent sign-in activity", "https://account.live.com/activity"),
+    ("Apple ID: devices", "https://appleid.apple.com/"),
+    ("Facebook: security & login", "https://www.facebook.com/settings?tab=security"),
+    ("Have I Been Pwned: is my email in a breach?", "https://haveibeenpwned.com/"),
+]
+
+DEVICE_RE = re.compile(
+    r"\b(Windows(?: NT)?(?: [\d.]+)?|Mac OS X|macOS|iPhone|iPad|Android(?: [\d.]+)?|"
+    r"Linux|Ubuntu|ChromeOS|Chrome|Firefox|Safari|Edge|Opera|Samsung|Pixel|Xiaomi|"
+    r"Redmi|OnePlus|Vivo|Oppo|Realme)\b", re.I)
+IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+LOC_RE = re.compile(r"(?:Location|Near|Approximate location|City)\s*[:\-]\s*([^\r\n<]{3,60})", re.I)
+
+
+def msg_text(m):
+    """Best-effort readable text of a message (plain preferred, else stripped HTML)."""
+    plain, htm = "", ""
+    for part in m.walk():
+        ctype = part.get_content_type()
+        if ctype not in ("text/plain", "text/html"):
+            continue
+        try:
+            raw = part.get_payload(decode=True) or b""
+            txt = raw.decode(part.get_content_charset() or "utf-8", "replace")
+        except Exception:
+            continue
+        if ctype == "text/plain":
+            plain += txt + "\n"
+        else:
+            htm += txt + "\n"
+    if plain.strip():
+        return plain
+    htm = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", htm)
+    htm = _html.unescape(re.sub(r"<[^>]+>", "\n", htm))
+    return re.sub(r"\n\s*\n+", "\n", htm)
+
+
+def parse_event(m):
+    subj = dec(m["Subject"]).replace("\n", " ").replace("\r", " ")
+    body = msg_text(m)
+    low_subj = subj.lower()
+    low_mix = (subj + " " + body[:800]).lower()
+    risk = "LOW"
+    if any(k in low_mix for k in WATCH_WORDS["HIGH"]):
+        risk = "HIGH"
+    elif any(k in low_subj for k in WATCH_WORDS["MEDIUM"]):
+        risk = "MEDIUM"
+    addr = parseaddr(dec(m["From"]))[1]
+    dom = base_domain(addr.split("@")[-1]) if "@" in addr else "?"
+    try:
+        d = to_naive_utc(parsedate_to_datetime(m["Date"]))
+    except Exception:
+        d = None
+    head = body[:3000]
+    ips = [ip for ip in dict.fromkeys(IP_RE.findall(head))
+           if all(int(x) <= 255 for x in ip.split("."))][:2]
+    devs = list(dict.fromkeys(x.strip().title() for x in DEVICE_RE.findall(head)))[:3]
+    loc = LOC_RE.search(head)
+    details = []
+    if devs:
+        details.append("Device: " + ", ".join(devs))
+    if ips:
+        details.append("IP: " + ", ".join(ips))
+    if loc:
+        details.append("Location: " + loc.group(1).strip())
+    return {"date": d, "service": dom, "subject": subj[:70], "risk": risk,
+            "details": details}
+
+
+def watch_mode(conn, args):
+    days = args.days
+    since = args.since or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    print("  " + C(MAG, f">> SECURITY WATCH  (since {since})", True))
+    print("  " + C(GREY, "Looking for login / device / password alerts in YOUR mailbox..."))
+    print()
+    words = WATCH_WORDS["HIGH"] + WATCH_WORDS["MEDIUM"]
+    ids = {}
+    for n, kw in enumerate(words, 1):
+        typ, data = conn.search(None, "SINCE", imap_date(since), "SUBJECT", f'"{kw}"')
+        if typ == "OK" and data and data[0]:
+            for i in data[0].split():
+                ids[i] = 1
+        show_progress("Searching", n, len(words))
+    id_list = sorted(ids, key=int)[-80:]
+    status("+", GREEN, f"{len(ids)} security mail(s) found" +
+           (" (showing newest 80)" if len(ids) > 80 else ""))
+
+    events = []
+    for n in range(0, len(id_list), 20):
+        chunk = id_list[n:n + 20]
+        typ, data = conn.fetch(b",".join(chunk), "(BODY.PEEK[])")
+        if typ == "OK":
+            for item in data:
+                if isinstance(item, tuple):
+                    events.append(parse_event(message_from_bytes(item[1])))
+        show_progress("Reading", min(n + 20, len(id_list)), len(id_list))
+
+    events.sort(key=lambda e: (e["date"] is None, e["date"] or datetime.min), reverse=False)
+    events.sort(key=lambda e: e["date"] or datetime.min, reverse=True)
+    print()
+    colors = {"HIGH": RED, "MEDIUM": YELLOW, "LOW": GREY}
+    for e in events:
+        when = e["date"].strftime("%Y-%m-%d %H:%M") if e["date"] else "unknown date"
+        tag = C(colors[e["risk"]], f"[{e['risk']}]".ljust(8), True)
+        print(f"  {tag} {C(GREY, when)}  {C(GREEN, e['service'], True)}")
+        print(f"           {e['subject']}")
+        if e["details"]:
+            print("           " + C(CYAN, "  |  ".join(e["details"])))
+    if events:
+        print()
+
+    high = sum(1 for e in events if e["risk"] == "HIGH")
+    med = sum(1 for e in events if e["risk"] == "MEDIUM")
+    if high:
+        box("[!] ACT NOW - POSSIBLE UNAUTHORIZED ACCESS", [
+            f"{high} high-risk alert(s) found. If you did NOT do these, your account may be hacked.",
+            "1. Change that account's password from a device you trust.",
+            "2. Open the device page below and LOG OUT all unknown devices.",
+            "3. Check the recovery email/phone were not changed. Turn on 2-Step Verification.",
+            "4. If your phone is lost or stolen: use 'Find my phone' below to lock or erase it.",
+        ], border=RED)
+    elif med:
+        box("[i] REVIEW THESE LOGINS", [
+            f"{med} login/device alert(s). If you recognise the device and time, ignore it.",
+            "If not, change the password and log out that device using the links below.",
+        ], border=YELLOW, title_color=YELLOW)
+    else:
+        box("[+] NOTHING FOUND", [
+            "No security alerts in this period.",
+            "Note: a hacker can delete alert mails, so also check the device lists below.",
+        ], border=GREEN, title_color=GREEN)
+    print()
+    print("  " + C(MAG, ">> CHECK / LOG OUT DEVICES (open these on your phone)", True))
+    for label, url in CHECK_LINKS:
+        print(f"  {C(GREEN, label)}")
+        print(f"     {C(CYAN, url)}")
+    print()
+    if args.csv and events:
+        with open(args.csv, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["risk", "date_utc", "service", "subject", "details"])
+            for e in events:
+                w.writerow([e["risk"], e["date"].strftime("%Y-%m-%d %H:%M") if e["date"] else "",
+                            e["service"], e["subject"], " | ".join(e["details"])])
+        status("+", GREEN, f"Saved CSV: {C(CYAN, args.csv)}")
+
+
+def ask_mode():
+    print("  " + C(MAG, "Choose a mode:", True))
+    print("   " + C(GREEN, "[1]", True) + " Find my accounts  (where is my email registered)")
+    print("   " + C(GREEN, "[2]", True) + " Security watch   (detect hacked / unknown logins, lost phone)")
+    while True:
+        try:
+            v = input("  " + C(CYAN, ">> ", True) + "Select 1 or 2 [1]: ").strip()
+        except EOFError:
+            return False
+        if v in ("", "1"):
+            print()
+            return False
+        if v == "2":
+            print()
+            return True
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def ask_email():
+    """Interactive prompt shown below the banner when no --email is given."""
+    while True:
+        try:
+            val = input("  " + C(CYAN, ">> ", True) + C(WHITE, "Enter YOUR email address: ", True)).strip()
+        except EOFError:
+            fail("No email entered.")
+        if EMAIL_RE.match(val):
+            print()
+            return val
+        status("x", RED, "That does not look like an email. Try again.")
+
+
 def run(args):
     if args.since:
         try:
@@ -542,6 +801,10 @@ def run(args):
         footer()
         return
 
+    if not args.email:
+        args.email = ask_email()
+        if sys.stdin.isatty() and not args.watch:
+            args.watch = ask_mode()
     confirm_ownership(args.yes)
     boot()
 
@@ -549,8 +812,14 @@ def run(args):
     if not host:
         fail("Unknown provider. Pass --host imap.yourprovider.com")
 
-    pw = os.environ.get("MAIL_APP_PASSWORD") or getpass.getpass(
-        "  App password (typing is hidden): ")
+    pw = os.environ.get("MAIL_APP_PASSWORD")
+    if not pw:
+        status("i", CYAN, "Gmail needs a 16-character " + C(YELLOW, "APP PASSWORD", True)
+               + " (not your normal password).")
+        status("i", CYAN, "Create one: " + C(CYAN, "https://myaccount.google.com/apppasswords"))
+        print("      " + C(GREY, "Logging in also proves the mailbox is yours."))
+        pw = getpass.getpass("  App password (typing is hidden): ")
+    pw = pw.replace(" ", "")
 
     def do_login():
         conn = imaplib.IMAP4_SSL(host)
@@ -560,7 +829,21 @@ def run(args):
     try:
         conn = with_spinner(f"Connecting to {host} ...", do_login)
     except imaplib.IMAP4.error as e:
-        fail(f"Login failed: {e}. Gmail/Yahoo/iCloud need an App Password and IMAP enabled.")
+        msg = str(e).lower()
+        if any(k in msg for k in ("application-specific", "app password",
+                                  "authenticationfailed", "invalid credentials")):
+            print()
+            box("[!] APP PASSWORD NEEDED", [
+                "Google/Yahoo/iCloud block your normal password for outside tools. "
+                "This is their rule, not a bug in AccountScan.",
+                "1. Open https://myaccount.google.com/security and turn ON 2-Step Verification.",
+                "2. Open https://myaccount.google.com/apppasswords",
+                "3. Type the name AccountScan, press Create, copy the 16 letters.",
+                "4. Run AccountScan again and paste that code (spaces are fine).",
+                "Your normal password was not saved anywhere.",
+            ], border=YELLOW, title_color=YELLOW)
+            sys.exit(1)
+        fail(f"Login failed: {e}")
     except OSError as e:
         fail(f"Cannot reach {host}: {e}")
     status("+", GREEN, f"Logged in as {C(CYAN, args.email)}")
@@ -578,6 +861,12 @@ def run(args):
     if host == "imap.gmail.com" and args.folder == "INBOX":
         status("i", CYAN, 'Tip: use --folder "[Gmail]/All Mail" to search your whole mailbox.')
     print()
+
+    if args.watch:
+        watch_mode(conn, args)
+        conn.logout()
+        footer()
+        return
 
     ids = find_ids(conn, args.since, args.only, lambda d, t: show_progress("Searching", d, t))
     status("+", GREEN, f"{len(ids)} matching mail(s) found")
@@ -606,10 +895,12 @@ def main(argv=None):
         and not os.environ.get("NO_COLOR")
     ANIM = tty and COLOR and not args.no_anim
 
-    if not (args.demo or args.about) and not args.email:
-        build_parser().error("--email is required (or use --demo / --about)")
+    if not (args.demo or args.about) and not args.email and not sys.stdin.isatty():
+        build_parser().error("--email is required when not running in a terminal")
 
     try:
+        if tty:
+            clear_screen()
         if not args.quick:
             matrix_intro()
         banner()
